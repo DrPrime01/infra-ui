@@ -175,7 +175,7 @@ const FALLBACK_COMPONENTS = [
   "sendgrid",
   "neon",
 ];
-const REGISTRY_MANIFEST_URL = `${process.env.INFRA_REGISTRY_BASE ?? "https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry"}/manifest.json`;
+const REGISTRY_MANIFEST_URL = `${process.env.INFRA_REGISTRY_BASE ?? "https://raw.githubusercontent.com/DrPrime01/infra-ui/refs/heads/main/packages/registry"}/manifest.json`;
 
 // Reads component names from the registry manifest, falling back to a built-in list offline.
 async function getSupportedComponents(): Promise<string[]> {

@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@drprime/infra-ui)](https://www.npmjs.com/package/@drprime/infra-ui)
 [![license](https://img.shields.io/npm/l/@drprime/infra-ui)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-DrPrime01%2Finfra--ui-181717?logo=github)](https://github.com/DrPrime01/infra-ui)
 
 A CLI that scaffolds production-ready backend infrastructure into your Next.js app — payments, auth, email, communications, backend platforms, third-party integrations, and headless CMSs — as real files you own, not dependencies you can't touch.
 
@@ -685,7 +686,7 @@ This lets the CLI detect already-installed components and prompt before overwrit
 By default, component templates are fetched from:
 
 ```
-https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry/<component>.json
+https://raw.githubusercontent.com/DrPrime01/infra-ui/refs/heads/main/packages/registry/<component>.json
 ```
 
 To pin to a different source (private fork, local dev server):
@@ -747,6 +748,10 @@ INFRA_REGISTRY_BASE=file://$(pwd)/packages/registry node packages/cli/dist/index
 ```
 
 ---
+
+## Contributing
+
+Issues and pull requests are welcome on [GitHub](https://github.com/DrPrime01/infra-ui).
 
 ## License
 

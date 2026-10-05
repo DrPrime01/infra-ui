@@ -28,7 +28,7 @@ const providerCasing: Record<string, string> = {
 };
 
 const DEFAULT_REGISTRY_BASE =
-  "https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry";
+  "https://raw.githubusercontent.com/DrPrime01/infra-ui/refs/heads/main/packages/registry";
 
 const REGISTRY_BASE = process.env.INFRA_REGISTRY_BASE ?? DEFAULT_REGISTRY_BASE;
 

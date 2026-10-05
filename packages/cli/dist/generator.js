@@ -10,7 +10,7 @@ const providerCasing = {
     facebook: "Facebook",
     discord: "Discord",
 };
-const DEFAULT_REGISTRY_BASE = "https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry";
+const DEFAULT_REGISTRY_BASE = "https://raw.githubusercontent.com/DrPrime01/infra-ui/refs/heads/main/packages/registry";
 const REGISTRY_BASE = process.env.INFRA_REGISTRY_BASE ?? DEFAULT_REGISTRY_BASE;
 const MAX_PAYLOAD_BYTES = 1_000_000;
 // Rejects paths that escape the project root via `..` traversal or symlinked ancestors.

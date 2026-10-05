@@ -5,14 +5,14 @@
   "type": "module",
   "license": "MIT",
   "author": "DrPrime01",
-  "homepage": "https://github.com/DrPrime01/test-infra-monorepo#readme",
+  "homepage": "https://github.com/DrPrime01/infra-ui#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DrPrime01/test-infra-monorepo.git",
+    "url": "git+https://github.com/DrPrime01/infra-ui.git",
     "directory": "packages/cli"
   },
   "bugs": {
-    "url": "https://github.com/DrPrime01/test-infra-monorepo/issues"
+    "url": "https://github.com/DrPrime01/infra-ui/issues"
   },
   "keywords": [
     "nextjs",
