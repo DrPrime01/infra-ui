@@ -35,12 +35,8 @@ const VALID_ORM_VALUES = [
     "manual",
     "UNKNOWN",
 ];
-// Only allow characters that are valid in npm package names
 const VALID_DEP_RE = /^[@a-zA-Z0-9][a-zA-Z0-9._@/\-]*$/;
-// Component names go into a URL path; lock down to a tight character set so a
-// compromised manifest can't redirect fetches via slashes/dots/encodings.
 const VALID_COMPONENT_RE = /^[a-z][a-z0-9-]*$/;
-// Helper: require non-empty trimmed input for `p.text` / `p.password`.
 const required = (label) => (v) => !v || v.trim().length === 0 ? `${label} is required` : undefined;
 function validateConfig(raw, projectRoot) {
     if (!raw || typeof raw !== "object") {
@@ -56,7 +52,6 @@ function validateConfig(raw, projectRoot) {
     if (typeof c.basePath !== "string") {
         throw new Error("Invalid basePath in infra.json — must be a string.");
     }
-    // basePath must stay inside the project — block absolute paths and traversal
     if (path.isAbsolute(c.basePath)) {
         throw new Error("basePath in infra.json must be relative, not absolute.");
     }
@@ -70,13 +65,9 @@ function validateConfig(raw, projectRoot) {
         packageManager: c.packageManager,
         orm: c.orm,
         basePath: c.basePath,
-        // Default to true for backward compat with infra.json files that predate this field
         isAppRouter: typeof c.isAppRouter === "boolean" ? c.isAppRouter : true,
     };
 }
-// ==========================================
-// COMMAND: INIT
-// ==========================================
 program
     .command("init")
     .description("Initialize configuration and setup infra.json")
@@ -124,8 +115,6 @@ program
     await fs.outputJson(configPath, config, { spaces: 2 });
     p.outro(`🎉 ${pc.green("Success!")} Created ${pc.cyan("infra.json")} at the root of your project.`);
 });
-// Fetch the registry manifest to learn which components are available.
-// Falls back to a baked-in list if the network is unavailable.
 const FALLBACK_COMPONENTS = [
     "stripe",
     "resend",
@@ -147,6 +136,7 @@ const FALLBACK_COMPONENTS = [
     "neon",
 ];
 const REGISTRY_MANIFEST_URL = `${process.env.INFRA_REGISTRY_BASE ?? "https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry"}/manifest.json`;
+// Reads component names from the registry manifest, falling back to a built-in list offline.
 async function getSupportedComponents() {
     try {
         const res = await fetch(REGISTRY_MANIFEST_URL, {
@@ -162,15 +152,10 @@ async function getSupportedComponents() {
         return FALLBACK_COMPONENTS;
     }
 }
-// ==========================================
-// COMMAND: ADD
-// ==========================================
 program
     .command("add <component>")
     .description("Add a new infrastructure component to your project")
     .action(async (component) => {
-    // Defense in depth: even if the manifest somehow lists weird names,
-    // refuse to fetch anything that isn't a plain `[a-z][a-z0-9-]*` token.
     if (!VALID_COMPONENT_RE.test(component)) {
         p.log.error(`Component name "${component}" is invalid. Use lowercase letters, digits, and hyphens.`);
         process.exit(1);
@@ -198,8 +183,6 @@ program
         process.exit(1);
     }
     const { orm: chosenORM, packageManager: pm, basePath, isAppRouter } = config;
-    // Cross-check infra.json against actual project state — warn (don't abort)
-    // on drift so users notice if they hand-edited the config out of sync
     try {
         const env = await detectEnvironment(projectRoot);
         if (env.orm !== "UNKNOWN" && env.orm !== chosenORM) {
@@ -212,15 +195,12 @@ program
             p.log.warn(`infra.json says isAppRouter=${isAppRouter} but project looks like ${env.isAppRouter ? "App Router" : "Pages Router"}.`);
         }
     }
-    catch {
-        /* scanner failure shouldn't block install */
-    }
+    catch { }
     const componentOptions = {
         providers: [],
         env: {},
         isAppRouter,
     };
-    // --- AUTH.JS PROVIDER PROMPTING ---
     if (component === "authjs") {
         const providerSelection = await p.multiselect({
             message: "Which authentication providers do you want to configure?",
@@ -247,7 +227,6 @@ program
                 });
                 if (p.isCancel(clientId))
                     process.exit(0);
-                // OAuth client secrets are sensitive — mask input.
                 const clientSecret = await p.password({
                     message: `${provider.toUpperCase()} Client Secret:`,
                     validate: required(`${provider} client secret`),
@@ -261,17 +240,12 @@ program
             }
         }
         p.note("Generating a secure AUTH_SECRET automatically...", "Security");
-        // base64url avoids `/` and `+` that can confuse some env-file parsers.
         componentOptions.env["AUTH_SECRET"] = crypto
             .randomBytes(32)
             .toString("base64url");
     }
-    // ------------------------------------
-    // --- CLERK KEY PROMPTING ---
     if (component === "clerk") {
         p.note("Provide your Clerk API keys from the Clerk dashboard.");
-        // Publishable key is `NEXT_PUBLIC_*` — designed to ship to the browser,
-        // so plain text input is fine (and lets the user spot-check the pasted value).
         const publishableKey = await p.text({
             message: "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:",
             placeholder: "pk_test_...",
@@ -285,8 +259,6 @@ program
         });
         if (p.isCancel(secretKey))
             process.exit(0);
-        // Webhook secret is created later in the Clerk dashboard. Allow blank;
-        // emit a loud warning so the user knows to fill it in before deploy.
         const webhookSecret = await p.password({
             message: "CLERK_WEBHOOK_SECRET (optional — leave blank to fill in later):",
         });
@@ -305,8 +277,6 @@ program
             p.log.warn("CLERK_WEBHOOK_SECRET left blank — replace the placeholder in .env.local before deploying, or webhook verification will fail.");
         }
     }
-    // ---------------------------
-    // --- RESEND KEY PROMPTING ---
     if (component === "resend") {
         p.note("Provide your Resend credentials from resend.com/api-keys.");
         const apiKey = await p.password({
@@ -325,8 +295,6 @@ program
         componentOptions.env["RESEND_API_KEY"] = apiKey;
         componentOptions.env["RESEND_FROM_EMAIL"] = fromEmail;
     }
-    // ----------------------------
-    // --- TWILIO KEY PROMPTING ---
     if (component === "twilio") {
         p.note("Provide your Twilio credentials from the Twilio Console (console.twilio.com).");
         const accountSid = await p.text({
@@ -349,7 +317,6 @@ program
         });
         if (p.isCancel(phoneNumber))
             process.exit(0);
-        // Optional — empty allowed (skip 2FA).
         const verifyServiceSid = await p.text({
             message: "TWILIO_VERIFY_SERVICE_SID (leave blank to skip 2FA / Verify):",
             placeholder: "VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -364,8 +331,6 @@ program
                 verifyServiceSid;
         }
     }
-    // ----------------------------
-    // --- PAYSTACK KEY PROMPTING ---
     if (component === "paystack") {
         p.note("Provide your Paystack API keys from the Paystack dashboard.");
         const secretKey = await p.password({
@@ -374,7 +339,6 @@ program
         });
         if (p.isCancel(secretKey))
             process.exit(0);
-        // Public key is `NEXT_PUBLIC_*` — visible to the browser by design.
         const publicKey = await p.text({
             message: "NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY:",
             placeholder: "pk_test_...",
@@ -385,8 +349,6 @@ program
         componentOptions.env["PAYSTACK_SECRET_KEY"] = secretKey;
         componentOptions.env["NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY"] = publicKey;
     }
-    // ------------------------------
-    // --- FIREBASE SERVICE SELECTION + KEY PROMPTING ---
     if (component === "firebase") {
         const selectedServices = await p.multiselect({
             message: "Which Firebase services do you want to add?",
@@ -492,8 +454,6 @@ program
         componentOptions.env["FIREBASE_ADMIN_CLIENT_EMAIL"] = adminClientEmail;
         componentOptions.env["FIREBASE_ADMIN_PRIVATE_KEY"] = adminPrivateKey;
     }
-    // -------------------------------------------------
-    // --- FLUTTERWAVE KEY PROMPTING ---
     if (component === "flutterwave") {
         p.note("Provide your Flutterwave API keys from the Flutterwave dashboard (app.flutterwave.com).");
         const secretKey = await p.password({
@@ -502,7 +462,6 @@ program
         });
         if (p.isCancel(secretKey))
             process.exit(0);
-        // Public key is `NEXT_PUBLIC_*` — designed to ship to the browser for the inline popup.
         const publicKey = await p.text({
             message: "NEXT_PUBLIC_FLW_PUBLIC_KEY:",
             placeholder: "FLWPUBK_TEST-...",
@@ -520,8 +479,6 @@ program
         componentOptions.env["NEXT_PUBLIC_FLW_PUBLIC_KEY"] = publicKey;
         componentOptions.env["FLW_WEBHOOK_SECRET"] = webhookSecret;
     }
-    // ---------------------------------
-    // --- SUPABASE SERVICE SELECTION + KEY PROMPTING ---
     if (component === "supabase") {
         const selectedServices = await p.multiselect({
             message: "Which Supabase services do you want to add?",
@@ -579,7 +536,6 @@ program
         componentOptions.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"] = anonKey;
         componentOptions.env["SUPABASE_SERVICE_ROLE_KEY"] =
             serviceRoleKey;
-        // Site URL only needed for OAuth redirect — skip if auth not selected.
         if (selectedServices.includes("auth")) {
             const siteUrl = await p.text({
                 message: "NEXT_PUBLIC_SITE_URL (used for OAuth redirect, e.g. http://localhost:3000):",
@@ -591,8 +547,6 @@ program
             componentOptions.env["NEXT_PUBLIC_SITE_URL"] = siteUrl;
         }
     }
-    // --------------------------------------------------
-    // --- GOOGLE CALENDAR KEY PROMPTING ---
     if (component === "google-calendar") {
         p.note("From Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs.\nMake sure the Google Calendar API is enabled in your project.", "Google Calendar config");
         const clientId = await p.text({
@@ -619,8 +573,6 @@ program
         componentOptions.env["GOOGLE_CLIENT_SECRET"] = clientSecret;
         componentOptions.env["GOOGLE_REDIRECT_URI"] = redirectUri;
     }
-    // -------------------------------------
-    // --- CALENDLY KEY PROMPTING ---
     if (component === "calendly") {
         p.note("From Calendly → Integrations → API & Webhooks → Personal Access Tokens.", "Calendly config");
         const accessToken = await p.password({
@@ -629,7 +581,6 @@ program
         });
         if (p.isCancel(accessToken))
             process.exit(0);
-        // Webhook signing key is created separately in Calendly → Integrations → Webhooks.
         const webhookSigningKey = await p.password({
             message: "CALENDLY_WEBHOOK_SIGNING_KEY (from Calendly → Integrations → Webhooks):",
             validate: required("Webhook signing key"),
@@ -641,8 +592,6 @@ program
         componentOptions.env["CALENDLY_WEBHOOK_SIGNING_KEY"] =
             webhookSigningKey;
     }
-    // ------------------------------
-    // --- GOOGLE MAPS SERVICE SELECTION + KEY PROMPTING ---
     if (component === "google-maps") {
         const selectedServices = await p.multiselect({
             message: "Which Google Maps services do you want to add?",
@@ -689,8 +638,6 @@ program
             process.exit(0);
         componentOptions.env["GOOGLE_MAPS_API_KEY"] = mapsApiKey;
     }
-    // -----------------------------------------------------
-    // --- STRAPI KEY PROMPTING ---
     if (component === "strapi") {
         p.note("From your Strapi admin panel → Settings → API Tokens (for the API token)\nand Settings → Webhooks (to set the Authorization header value).", "Strapi config");
         const strapiUrl = await p.text({
@@ -716,8 +663,6 @@ program
         componentOptions.env["STRAPI_API_TOKEN"] = apiToken;
         componentOptions.env["STRAPI_WEBHOOK_SECRET"] = webhookSecret;
     }
-    // ----------------------------
-    // --- SANITY KEY PROMPTING ---
     if (component === "sanity") {
         p.note("From your Sanity project dashboard → API → Tokens (for the API token)\nand API → Webhooks (to get the webhook secret).", "Sanity config");
         const projectId = await p.text({
@@ -727,14 +672,12 @@ program
         });
         if (p.isCancel(projectId))
             process.exit(0);
-        // Dataset defaults to "production" — allow blank input.
         const dataset = await p.text({
             message: "NEXT_PUBLIC_SANITY_DATASET (press Enter for \"production\"):",
             placeholder: "production",
         });
         if (p.isCancel(dataset))
             process.exit(0);
-        // Optional — public datasets work without a token.
         const apiToken = await p.password({
             message: "SANITY_API_TOKEN (leave blank if your dataset is publicly readable):",
         });
@@ -755,8 +698,6 @@ program
         }
         componentOptions.env["SANITY_WEBHOOK_SECRET"] = webhookSecret;
     }
-    // ----------------------------
-    // --- CONTENTFUL KEY PROMPTING ---
     if (component === "contentful") {
         p.note("From your Contentful space → Settings → API Keys (for delivery/preview tokens)\nand Settings → Webhooks (to configure the x-contentful-secret header value).", "Contentful config");
         const spaceId = await p.text({
@@ -772,7 +713,6 @@ program
         });
         if (p.isCancel(deliveryToken))
             process.exit(0);
-        // Optional — only needed for Next.js Draft Mode.
         const previewToken = await p.password({
             message: "CONTENTFUL_PREVIEW_TOKEN (Content Preview API token — leave blank to skip Draft Mode):",
         });
@@ -794,8 +734,6 @@ program
         componentOptions.env["CONTENTFUL_WEBHOOK_SECRET"] =
             webhookSecret;
     }
-    // --------------------------------
-    // --- HYGRAPH KEY PROMPTING ---
     if (component === "hygraph") {
         p.note("From your Hygraph project → Project Settings → API Access.\nWebhook secret: Project Settings → Webhooks → Add Webhook → custom header value.", "Hygraph config");
         const apiUrl = await p.text({
@@ -805,13 +743,11 @@ program
         });
         if (p.isCancel(apiUrl))
             process.exit(0);
-        // Optional — public Hygraph endpoints work without a token.
         const apiToken = await p.password({
             message: "HYGRAPH_API_TOKEN (leave blank if content is publicly readable):",
         });
         if (p.isCancel(apiToken))
             process.exit(0);
-        // Optional — only needed for Next.js Draft Mode / preview.
         const previewUrl = await p.text({
             message: "HYGRAPH_PREVIEW_URL (leave blank to skip Draft Mode):",
             placeholder: "https://api-eu-west-2.hygraph.com/v2/xxx/master",
@@ -834,8 +770,6 @@ program
         componentOptions.env["HYGRAPH_WEBHOOK_SECRET"] =
             hygraphWebhookSecret;
     }
-    // -----------------------------
-    // --- SENDGRID KEY PROMPTING ---
     if (component === "sendgrid") {
         p.note("From your SendGrid account → Settings → API Keys.\nWebhook public key: Settings → Mail Settings → Event Webhooks → enable Signed Event Webhooks.", "SendGrid config");
         const sgApiKey = await p.password({
@@ -851,7 +785,6 @@ program
         });
         if (p.isCancel(sgFromEmail))
             process.exit(0);
-        // Optional — only needed if enabling Signed Event Webhooks.
         const sgWebhookPublicKey = await p.text({
             message: "SENDGRID_WEBHOOK_PUBLIC_KEY (PEM public key from Event Webhooks settings — leave blank to skip):",
             placeholder: "-----BEGIN PUBLIC KEY-----",
@@ -865,8 +798,6 @@ program
                 sgWebhookPublicKey;
         }
     }
-    // ------------------------------
-    // --- NEON KEY PROMPTING ---
     if (component === "neon") {
         p.note("From your Neon project dashboard → Connection Details → Connection string.\nUse the pooled connection string for Prisma; direct connection for Drizzle/raw SQL.", "Neon config");
         const databaseUrl = await p.password({
@@ -875,7 +806,6 @@ program
         });
         if (p.isCancel(databaseUrl))
             process.exit(0);
-        // Pre-select the ORM based on what infra-ui init detected in this project.
         const ormDefault = chosenORM === "prisma"
             ? "prisma"
             : chosenORM === "drizzle-orm"
@@ -909,8 +839,6 @@ program
         componentOptions.selectedServices = [ormChoice];
         componentOptions.env["DATABASE_URL"] = databaseUrl;
     }
-    // --------------------------
-    // authjs files are written into infra/auth/ — show the real path
     const displayComponent = component === "authjs" ? "auth" : component;
     const confirmInstall = await p.confirm({
         message: `Install ${pc.green(component)} into ${pc.cyan("./infra/" + displayComponent)}?`,
@@ -924,9 +852,6 @@ program
     if (await fs.pathExists(targetDir)) {
         p.log.warn(`The ${pc.yellow(component)} component already exists in your project.`);
         const overwrite = await p.confirm({
-            // Be honest about scope: only `infra/<component>/` is what we check
-            // for. Routes (`app/api/webhooks/<component>/route.ts`), middleware,
-            // and `.env.local` are always overwritten/merged regardless.
             message: pc.red(`Overwrite ./infra/${displayComponent}/? Other generated files (webhook routes, middleware, .env.local) will be re-written either way.`),
             initialValue: false,
         });
@@ -937,11 +862,7 @@ program
     }
     const installSpinner = p.spinner();
     installSpinner.start(`Generating files tailored for ${chosenORM}...`);
-    // Track spinner liveness so the catch block doesn't double-stop after a
-    // successful stop("Files generated.") + later failure.
     let spinnerActive = true;
-    // Track files written by the generator outside the try so the catch can
-    // roll them back if a later step (dep install) fails.
     let writtenForRollback = [];
     try {
         const result = await generateComponent(projectRoot, chosenORM, component, componentOptions);
@@ -949,8 +870,6 @@ program
         installSpinner.stop(pc.green("Files generated."));
         spinnerActive = false;
         if (result.dependencies && result.dependencies.length > 0) {
-            // Validate every dependency name before passing to execFile — prevents
-            // a compromised registry from injecting arbitrary shell commands
             const safeDeps = result.dependencies.filter((d) => VALID_DEP_RE.test(d));
             if (safeDeps.length !== result.dependencies.length) {
                 throw new Error("Registry returned one or more invalid dependency names. Aborting.");
@@ -961,7 +880,6 @@ program
                 : ["add", ...safeDeps, "--silent"];
             depSpinner.start(`Installing dependencies via ${pm}...`);
             try {
-                // execFile — no shell spawned, so no shell injection possible
                 await execFileAsync(pm, installArgs, { cwd: projectRoot });
                 depSpinner.stop(pc.green("Dependencies installed."));
             }
@@ -970,12 +888,9 @@ program
                 throw err;
             }
         }
-        // Surface generator warnings (adapter fallbacks, .gitignore misses, etc.)
         for (const w of result.warnings ?? []) {
             p.log.warn(w);
         }
-        // Lock-file write is best-effort — a disk error here shouldn't blow up
-        // the install or trigger file rollback.
         try {
             const lockPath = path.join(projectRoot, "infra.lock.json");
             let lock = { version: 1, components: {} };
@@ -985,9 +900,7 @@ program
                     if (!lock.components)
                         lock.components = {};
                 }
-                catch {
-                    /* corrupt lock — overwrite */
-                }
+                catch { }
             }
             lock.components[component] = {
                 installedAt: new Date().toISOString(),
@@ -1001,15 +914,10 @@ program
         }
     }
     catch (error) {
-        // Only stop the install spinner if it's still running — otherwise we'd
-        // overwrite a previous "Files generated." with "Failed." on the same spinner.
         if (spinnerActive) {
             installSpinner.stop(pc.red("Failed."));
             spinnerActive = false;
         }
-        // Roll back files written by the generator. The generator self-cleans on
-        // its own failures; this handles failures AFTER generation (dep install,
-        // bad dep name, etc.) where files exist but the install is incomplete.
         if (writtenForRollback.length > 0) {
             await Promise.allSettled(writtenForRollback.map((f) => fs.remove(f)));
             p.log.info(`Rolled back ${writtenForRollback.length} file(s) written by the generator.`);

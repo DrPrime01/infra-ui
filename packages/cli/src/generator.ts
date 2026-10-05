@@ -30,17 +30,11 @@ const providerCasing: Record<string, string> = {
 const DEFAULT_REGISTRY_BASE =
   "https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/heads/main/packages/registry";
 
-// Override at runtime to pin to a specific commit/tag, e.g.:
-//   INFRA_REGISTRY_BASE=https://raw.githubusercontent.com/DrPrime01/test-infra-monorepo/refs/tags/v0.3.0/packages/registry
 const REGISTRY_BASE = process.env.INFRA_REGISTRY_BASE ?? DEFAULT_REGISTRY_BASE;
 
 const MAX_PAYLOAD_BYTES = 1_000_000;
 
-// Path-traversal + symlink-escape guard.
-// 1) `path.resolve` normalizes `..` traversal.
-// 2) We walk up to the deepest existing ancestor and `realpath` it — that
-//    catches a malicious symlink anywhere up the chain (e.g. `infra` →
-//    `/etc`) before we ever write through it.
+// Rejects paths that escape the project root via `..` traversal or symlinked ancestors.
 async function assertSafePath(
   targetPath: string,
   realRoot: string,
@@ -78,6 +72,7 @@ async function assertSafePath(
   }
 }
 
+// Streams the registry JSON under a size cap and verifies optional per-file sha256 integrity.
 async function fetchRegistry(component: string): Promise<unknown> {
   const url = `${REGISTRY_BASE}/${component}.json`;
   const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
@@ -91,8 +86,6 @@ async function fetchRegistry(component: string): Promise<unknown> {
     throw new Error("Registry response had no body.");
   }
 
-  // Stream the body so a Content-Length lie can't OOM us — abort mid-stream
-  // when the cap is exceeded rather than buffering the full payload first.
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let received = 0;
@@ -111,8 +104,6 @@ async function fetchRegistry(component: string): Promise<unknown> {
     }
     streamCompleted = true;
   } finally {
-    // Always release the stream — covers both normal completion and any
-    // mid-stream rejection. cancel() on a finished stream is a no-op.
     if (!streamCompleted) {
       await reader.cancel().catch(() => {});
     }
@@ -120,8 +111,6 @@ async function fetchRegistry(component: string): Promise<unknown> {
   const text = Buffer.concat(chunks).toString("utf-8");
   const payload = JSON.parse(text) as Record<string, unknown>;
 
-  // Optional per-file integrity. If the registry ships `integrity: { "client.ts": "sha256-..." }`,
-  // we verify every file. Missing field = no verification (backwards compatible).
   if (payload.integrity && typeof payload.integrity === "object") {
     const integrity = payload.integrity as Record<string, string>;
     const files = (payload.files ?? {}) as Record<string, string>;
@@ -144,10 +133,7 @@ async function fetchRegistry(component: string): Promise<unknown> {
   return payload;
 }
 
-// Ask git itself whether a file is gitignored. Returns:
-//   true  → ignored
-//   false → tracked / not ignored
-//   null  → couldn't determine (not a repo, git not installed, etc.)
+// Returns true if git ignores the path, false if not, and null if git can't tell.
 async function isGitIgnored(
   relPath: string,
   cwd: string,
@@ -156,19 +142,13 @@ async function isGitIgnored(
     await execFileAsync("git", ["check-ignore", "-q", relPath], { cwd });
     return true;
   } catch (err) {
-    // `git check-ignore -q` exits 1 for "not ignored" — surfaced as numeric
-    // code on the rejected ExecFileException. Anything else (ENOENT, 128,
-    // string codes) means we couldn't determine.
     const code = (err as { code?: number | string }).code;
     if (code === 1 || code === "1") return false;
     return null;
   }
 }
 
-// One-shot write with optional mode. fs.writeFile's `mode` option is only
-// honored when CREATING the file (Node POSIX semantics); for existing files
-// we explicitly chmod after writing so secrets always end up at the requested
-// permission regardless of pre-existing perms.
+// Writes a file then chmods it, since writeFile's `mode` only applies when creating.
 async function writeFileAtomic(
   target: string,
   content: string,
@@ -177,18 +157,15 @@ async function writeFileAtomic(
   await fs.ensureDir(path.dirname(target));
   if (mode !== undefined) {
     await fs.writeFile(target, content, { mode });
-    // Explicit chmod — covers the existing-file case where the constructor
-    // `mode` was silently ignored. Best-effort on non-POSIX FS.
     try {
       await fs.chmod(target, mode);
-    } catch {
-      /* Windows / non-POSIX — accept */
-    }
+    } catch {}
   } else {
     await fs.writeFile(target, content);
   }
 }
 
+// Writes a component's files, middleware, env vars and deps, rolling back on failure.
 export async function generateComponent(
   projectRoot: string,
   orm: DetectedORM,
@@ -197,8 +174,6 @@ export async function generateComponent(
 ): Promise<GenerateResult> {
   const rawPayload = (await fetchRegistry(component)) as Record<string, unknown>;
 
-  // Firebase-style registry: assemble flat `files` from sharedFiles + selected serviceFiles.
-  // For all other components the payload passes through unchanged.
   let payload: Record<string, unknown>;
   if (
     rawPayload.serviceFiles &&
@@ -226,7 +201,6 @@ export async function generateComponent(
     payload = rawPayload;
   }
 
-  // Realpath the project root once — anchor for all symlink-aware checks.
   const realRoot = await fs.realpath(projectRoot);
 
   const hasSrcDirectory = await fs.pathExists(path.join(realRoot, "src"));
@@ -239,7 +213,6 @@ export async function generateComponent(
   const isAppRouter = options?.isAppRouter ?? true;
   const warnings: string[] = [];
 
-  // Plan every write first; nothing hits disk until all paths are validated.
   const plannedWrites: Array<{ target: string; content: string }> = [];
   const plan = async (target: string, content: string) => {
     await assertSafePath(target, realRoot);
@@ -297,8 +270,6 @@ export async function generateComponent(
   if (adapters) {
     const adapterContent = adapters[orm] ?? adapters["manual"];
     if (adapterContent === undefined) {
-      // Defensive: a malformed registry could omit both the user's ORM and
-      // the "manual" fallback. Skip the write and tell the user.
       warnings.push(
         `${component}: no adapter for ORM "${orm}" and no "manual" fallback in registry. Skipping adapter.ts — you'll need to write your own.`,
       );
@@ -312,7 +283,6 @@ export async function generateComponent(
     }
   }
 
-  // --- Middleware handling (sidecar for Clerk conflicts; merge for Auth.js) ---
   const middlewareTemplates = payload.middlewareTemplates as
     | Record<string, string>
     | undefined;
@@ -326,9 +296,7 @@ export async function generateComponent(
       const cleanVersion = String(rawVersion).replace(/[^0-9.]/g, "");
       nextVersion = parseInt(cleanVersion.split(".")[0], 10);
       if (Number.isNaN(nextVersion)) nextVersion = 16;
-    } catch {
-      /* default to 16 safely */
-    }
+    } catch {}
 
     const isNext16 = nextVersion >= 16;
     const interceptorFileName = isNext16 ? "proxy.ts" : "middleware.ts";
@@ -337,8 +305,6 @@ export async function generateComponent(
     const baseTemplate = middlewareTemplates[templateKey];
 
     if (typeof baseTemplate !== "string" || baseTemplate.length === 0) {
-      // Registry shipped middlewareTemplates but not for this router type —
-      // bail rather than write `undefined` to disk.
       warnings.push(
         `${component}: no middleware template for "${templateKey}" (Next ${nextVersion}). Skipping middleware write.`,
       );
@@ -348,8 +314,6 @@ export async function generateComponent(
       if (await fs.pathExists(interceptorPath)) {
         const existingContent = await fs.readFile(interceptorPath, "utf-8");
         const authImportRe = /from\s+['"]\.\/auth['"]/;
-        // Match the actual call site — `clerkMiddleware(...)` — not a bare
-        // string that could appear in a comment or unrelated identifier.
         const clerkCallRe = /clerkMiddleware\s*\(/;
         if (component === "authjs" && !authImportRe.test(existingContent)) {
           middlewareWrite = {
@@ -405,11 +369,6 @@ export async function generateComponent(
     plannedWrites.push(middlewareWrite);
   }
 
-  // --- Atomic-ish write with rollback ---
-  // Push BEFORE awaiting so rollback covers every planned path, even if a
-  // sibling task succeeds after another rejects. Use `allSettled` so all
-  // writes finish before rollback starts — otherwise a late-completing write
-  // could recreate a file after `fs.remove` already ran.
   const writtenFiles: string[] = [];
   const results = await Promise.allSettled(
     plannedWrites.map(async (w) => {
@@ -425,7 +384,6 @@ export async function generateComponent(
     throw firstFailure.reason;
   }
 
-  // --- Env vars ---
   if (options?.env && Object.keys(options.env).length > 0) {
     const envLocalPath = path.join(realRoot, ".env.local");
     await assertSafePath(envLocalPath, realRoot);
@@ -450,11 +408,9 @@ export async function generateComponent(
       envContent += `${key}="${safeValue}"\n`;
     }
 
-    // Write with 0o600 in one shot — no default-perm race window on secrets.
     await writeFileAtomic(envLocalPath, envContent, 0o600);
     writtenFiles.push(envLocalPath);
 
-    // Ask git whether .env.local is ignored. Avoids gitignore-syntax guessing.
     const ignored = await isGitIgnored(".env.local", realRoot);
     if (ignored === false) {
       warnings.push(
@@ -467,9 +423,6 @@ export async function generateComponent(
     }
   }
 
-  // --- Conditional dependencies (registry-declared) ---
-  // Schema: [{ when: { ormIn?: string[], isAppRouter?: boolean }, deps: string[] }]
-  // {{orm}} in dep strings is replaced with the resolved ORM name.
   const baseDeps = ((payload.dependencies as string[] | undefined) ?? []).slice();
   const rawConditional = payload.conditionalDeps;
   const conditional: Array<{
@@ -478,9 +431,6 @@ export async function generateComponent(
   }> = [];
   if (Array.isArray(rawConditional)) {
     for (const rule of rawConditional) {
-      // Validate the FULL shape: rule.when's predicates must be the right
-      // types, otherwise a typo like `ormIn: [1, 2]` or `isAppRouter: "true"`
-      // would pass a loose check and then silently never match anything.
       const shapeOk =
         rule &&
         typeof rule === "object" &&
@@ -514,8 +464,6 @@ export async function generateComponent(
     if (!ormMatch || !routerMatch) continue;
     for (const dep of rule.deps) {
       if (dep.includes("{{orm}}")) {
-        // `manual` isn't a DetectedORM literal but is a valid infra.json value
-        // (user picks it during init when no ORM is detected). Compare as string.
         const ormStr = orm as string;
         if (ormStr === "UNKNOWN" || ormStr === "manual") {
           warnings.push(

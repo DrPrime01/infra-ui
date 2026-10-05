@@ -69,7 +69,6 @@ export async function handleStripeEvent(event: Stripe.Event) {
       const invoice = event.data.object as Stripe.Invoice;
       const subId = invoiceSubscriptionId(invoice);
       if (!subId) break;
-      // New Stripe API uses `pricing.price`; older payloads exposed `price.id`.
       const firstLine = invoice.lines.data[0] as unknown as {
         pricing?: { price?: string };
         price?: { id?: string };

@@ -1,5 +1,6 @@
 import fs from "fs-extra";
 import path from "path";
+// Infers package manager, ORM, router type and src/ layout from the project files.
 export async function detectEnvironment(projectRoot) {
     const pkgPath = path.join(projectRoot, "package.json");
     if (!(await fs.pathExists(pkgPath))) {
@@ -7,7 +8,6 @@ export async function detectEnvironment(projectRoot) {
     }
     const pkg = await fs.readJson(pkgPath);
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-    // Parallel filesystem checks — all are independent reads
     const [hasPnpm, hasBun, hasYarn, hasNpm, hasAppRoot, hasAppSrc, hasSrc] = await Promise.all([
         fs.pathExists(path.join(projectRoot, "pnpm-lock.yaml")),
         fs.pathExists(path.join(projectRoot, "bun.lockb")),
@@ -44,7 +44,6 @@ export async function detectEnvironment(projectRoot) {
     return {
         orm,
         packageManager,
-        // Check both root app/ and src/app/ for App Router projects
         isAppRouter: hasAppRoot || hasAppSrc,
         basePath: hasSrc ? "src" : "",
         tailwind: !!deps["tailwindcss"],

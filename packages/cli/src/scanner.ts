@@ -16,6 +16,7 @@ export type DetectedORM =
 
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
+// Infers package manager, ORM, router type and src/ layout from the project files.
 export async function detectEnvironment(projectRoot: string) {
   const pkgPath = path.join(projectRoot, "package.json");
 
@@ -28,7 +29,6 @@ export async function detectEnvironment(projectRoot: string) {
   const pkg = await fs.readJson(pkgPath);
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-  // Parallel filesystem checks — all are independent reads
   const [hasPnpm, hasBun, hasYarn, hasNpm, hasAppRoot, hasAppSrc, hasSrc] =
     await Promise.all([
       fs.pathExists(path.join(projectRoot, "pnpm-lock.yaml")),
@@ -58,7 +58,6 @@ export async function detectEnvironment(projectRoot: string) {
   return {
     orm,
     packageManager,
-    // Check both root app/ and src/app/ for App Router projects
     isAppRouter: hasAppRoot || hasAppSrc,
     basePath: hasSrc ? "src" : "",
     tailwind: !!deps["tailwindcss"],
